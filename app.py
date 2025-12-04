@@ -7,7 +7,7 @@ import re
 st.set_page_config(page_title="Spoglio Sceneggiatura", layout="wide")
 
 st.title("🎬 Spoglio Sceneggiatura Automatico")
-st.markdown("Versione aggiornata: corregge la spaziatura senza unire le parole dell'ambiente.")
+st.markdown("Versione Finale: accetta anche scene speciali (es. Titoli/Montaggi) prive di INT/EST.")
 
 uploaded_file = st.file_uploader("Carica la tua sceneggiatura (PDF)", type="pdf")
 
@@ -28,9 +28,8 @@ def parse_screenplay(file):
                 line = line.strip()
                 if not line: continue
 
-                # --- FIX SPAZIATURA CHIRURGICO ---
-                # Invece di togliere tutti gli spazi, correggiamo solo le parole chiave note
-                # che nel tuo PDF appaiono spaziate (E S T -> EST)
+                # --- 1. FIX SPAZIATURA CHIRURGICO ---
+                # Corregge spazi strani solo nelle parole chiave note
                 line = line.replace("E S T", "EST")
                 line = line.replace("I N T", "INT")
                 line = line.replace("E X T", "EXT")
@@ -40,53 +39,66 @@ def parse_screenplay(file):
                 line = line.replace("A L B A", "ALBA")
                 line = line.replace("T R A M O N T O", "TRAMONTO")
                 
-                # Correggiamo anche "1 ." in "1."
+                # Corregge "1 ." in "1."
                 line = re.sub(r'(\d+)\s+\.', r'\1.', line)
 
-                # --- RICONOSCIMENTO SCENA ---
-                # Cerca numero, punto e una delle parole chiave
-                regex_scene = r'^(\d+)\.\s*.*(EST|INT|EXT|I\/E|E\/I)'
+                # --- 2. RICONOSCIMENTO SCENA (RELAXED) ---
+                # Cerca semplicemente un numero seguito da un punto all'inizio della riga
+                regex_start = r'^(\d+)\.\s+(.*)'
                 
-                match = re.search(regex_scene, line, re.IGNORECASE)
+                match = re.search(regex_start, line)
                 
                 if match:
                     scene_num = match.group(1)
+                    raw_content = match.group(2).strip()
                     
-                    # Rimuoviamo il numero iniziale per pulire
-                    full_text = re.sub(r'^\d+\.\s*', '', line).strip()
+                    # FILTRO DI SICUREZZA:
+                    # Per evitare di prendere liste numerate nei dialoghi (es. "1. Ciao"),
+                    # accettiamo la riga SOLO SE:
+                    # A) Contiene parole chiave (INT/EST/EXT)
+                    # OPPURE
+                    # B) È scritta quasi tutta in MAIUSCOLO (come la Scena 6)
                     
-                    # --- ESTRAZIONE DATI ---
+                    is_header_keywords = re.search(r'\b(EST|INT|EXT|I\/E|E\/I)\b', raw_content, re.IGNORECASE)
+                    
+                    # Calcoliamo se la riga è prevalentemente maiuscola (ignorando numeri e simboli)
+                    clean_chars = re.sub(r'[^a-zA-Z]', '', raw_content)
+                    is_uppercase = clean_chars.isupper() if clean_chars else False
+                    
+                    # Se non ha le parole chiave E non è maiuscola, probabilmente non è una scena
+                    if not is_header_keywords and not is_uppercase:
+                        continue
+
+                    # --- 3. ESTRAZIONE DATI ---
+                    full_text = raw_content
                     ie = ""
                     gn = ""
                     
-                    # 1. Trova I/E
+                    # A. Trova I/E (Opzionale)
                     match_ie = re.search(r'\b(EST-INT|INT-EST|EST/INT|INT/EST|I/E|E/I|EST|INT|EXT)\b', full_text, re.IGNORECASE)
                     if match_ie:
                         ie = match_ie.group(0).upper()
-                        # Rimuoviamo IE dalla stringa
                         full_text = full_text.replace(ie, "", 1).strip()
                     
-                    # 2. Trova G/N
+                    # B. Trova G/N (Opzionale)
                     match_gn = re.search(r'\b(GIORNO|NOTTE|ALBA|TRAMONTO|SERA|POMERIGGIO)\b', full_text, re.IGNORECASE)
                     if match_gn:
                         gn = match_gn.group(0).upper()
-                        # Rimuoviamo GN dalla stringa
                         full_text = full_text.replace(gn, "", 1).strip()
                     
-                    # 3. Pulizia Separatori iniziali (trattini, slash, punti rimasti)
+                    # C. Pulizia residui iniziali
                     full_text = re.sub(r'^[\s\/\-\–\.]+', '', full_text).strip()
                     
-                    # 4. Dividi Ambiente e Sottoambiente
-                    # Divide sul trattino (-) o lineetta lunga (–)
+                    # D. Split Ambiente / Sottoambiente
+                    # Dividiamo sul trattino
                     parts = re.split(r'[\-\–]', full_text)
                     parts = [p.strip() for p in parts if p.strip()]
                     
                     ambiente = parts[0] if len(parts) > 0 else ""
-                    # Unisce il resto come sottoambiente
                     sottoambiente = " - ".join(parts[1:]) if len(parts) > 1 else ""
 
-                    # Filtro anti-spazzatura (se l'ambiente è lunghissimo, non è una scena)
-                    if len(ambiente) < 80: 
+                    # Controllo lunghezza (evita false catture di paragrafi lunghi)
+                    if len(ambiente) < 100: 
                         data.append({
                             "Scena": scene_num,
                             "I/E": ie,
@@ -118,8 +130,7 @@ if uploaded_file is not None:
                     mime='text/csv',
                 )
             else:
-                st.warning("Nessuna scena trovata. Controlla il formato del PDF.")
-                st.write("Suggerimento: Verifica se il PDF è un testo selezionabile e non una scansione.")
+                st.warning("Nessuna scena trovata.")
 
         except Exception as e:
-            st.error(f"Si è verificato un errore: {e}")
+            st.error(f"Errore: {e}")
